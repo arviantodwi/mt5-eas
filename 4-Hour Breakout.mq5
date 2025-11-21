@@ -5,11 +5,18 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, Arvianto D. Wicaksono"
 #property link      "https://www.arvian.to"
-#property version   "1.21" // Optimized performance by running checks only once per M5 bar
+#property version   "1.25" // Fixed Invalid Volume Error (10014) by rewriting Adaptive Lot Sizing
 #property description "This Expert Advisor identifies and marks the high and low of the first 4-hour candle of the day."
 #property description "Calculates and draws key Fibonacci retracement levels within the range."
 #property description "Detects breakouts of the 4H range on the M5 timeframe and places pending limit orders after ATR confirmation."
 
+//+------------------------------------------------------------------+
+//| ENUM for Lot Sizing Method                                       |
+//+------------------------------------------------------------------+
+enum LotSizingMethod {
+    FIXED_LOT_SIZE,
+    ADAPTIVE_LOT_SIZE
+};
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\OrderInfo.mqh>
@@ -24,8 +31,10 @@ input ENUM_LINE_STYLE FiboLineStyle = STYLE_DOT; // Style for the Fibo Retraceme
 input int FiboLineWidth = 1;                     // Width for the Fibo Retracement lines
 
 input group "Execution Parameters"
-input double InpLotSize = 0.01;              // Lot size for orders
-input double InpRiskRewardRatio = 5.0;       // Risk/Reward Ratio (TP/Risk)
+input LotSizingMethod InpLotSizingMethod = ADAPTIVE_LOT_SIZE; // Lot Sizing Method
+input double InpFixedLotSize = 0.01;         // Lot size if Fixed is selected
+input double InpRiskRewardRatio = 2.5;       // Risk/Reward Ratio (TP/Risk) - Reduced from 5.0 for better win probability
+input double InpBalanceThreshold = 1000.0;   // Balance required per minimum lot (e.g., 1000 USD per 0.01 lot)
 input int    InpSessionEndHour = 23;         // Hour of the day to remove pending orders (0-23)
 input double InpAtrMultiplier = 0.8;         // Multiplier for ATR filter
 
@@ -54,6 +63,10 @@ double   g_avg50_61 = 0.0;        // Average of 50.0% and 61.8%
 // --- ATR Indicator Handle ---
 int      g_atrHandle = INVALID_HANDLE;
 
+// --- Lot Sizing Variables ---
+double   g_minLot = 0.0; // Symbol minimum lot size
+double   g_lotStep = 0.0; // Symbol lot step
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -71,6 +84,10 @@ int OnInit()
        Print("Error creating ATR indicator");
        return(INIT_FAILED);
       }
+      
+//--- Get symbol properties for lot calculations
+    g_minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+    g_lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
 
 //--- Initialize the day marker to the previous day to force a setup on the first tick.
     g_currentDayStart = (datetime)iTime(_Symbol, PERIOD_D1, 1);
@@ -79,7 +96,7 @@ int OnInit()
     g_hasLoggedAtrWait = false;
     g_bias = "none";
     g_lastCheckedM5Time = 0;
-    Print("4-Hour Breakout v1.21 Initialized.");
+    Print("4-Hour Breakout v1.25 Initialized.");
     return(INIT_SUCCEEDED);
    }
 
@@ -95,7 +112,7 @@ void OnDeinit(const int reason)
       }
 //--- Clean up any remaining objects when the EA is removed or stopped
     ObjectsDeleteAll(0, g_prefix);
-    Print("4-Hour Breakout v1.21 Deinitialized.");
+    Print("4-Hour Breakout v1.25 Deinitialized.");
    }
 
 //+------------------------------------------------------------------+
@@ -313,6 +330,38 @@ void CheckForAtrConfirmation(MqlRates &m5Bar)
    }
 
 //+------------------------------------------------------------------+
+//| Calculates the lot size based on the chosen method               |
+//+------------------------------------------------------------------+
+double CalculateLotSize()
+{
+    if (InpLotSizingMethod == FIXED_LOT_SIZE) return InpFixedLotSize;
+    
+    // Adaptive Lot Size Logic: Calculated based on Balance Threshold.
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    
+    // 1. Calculate how many 'min lots' are justified by the current balance
+    // justified_min_lots = floor(balance / threshold)
+    double justified_min_lots = MathFloor(balance / InpBalanceThreshold);
+    
+    // 2. Calculate the lot size based on the number of justified min lots
+    // calculatedLot = justified_min_lots * g_minLot
+    double calculatedLot = justified_min_lots * g_minLot;
+    
+    // 3. Ensure the minimum lot size is always met
+    calculatedLot = MathMax(calculatedLot, g_minLot);
+    
+    // Adjust lot to the nearest lot step (crucial for correct order placement)
+    // Use 8 decimals for precise rounding to avoid floating point issues
+    double lot = NormalizeDouble(MathRound(calculatedLot / g_lotStep) * g_lotStep, 8);
+    
+    // 4. Final safety check on minimum lot
+    lot = MathMax(lot, g_minLot);
+    
+    PrintFormat("Adaptive Lot: Balance=%.2f, Min Lot Incr=%.0f, Final Lot=%.2f", balance, justified_min_lots, lot);
+    return lot;
+}
+
+//+------------------------------------------------------------------+
 //| Places a pending BUY order                                        |
 //+------------------------------------------------------------------+
 void PlacePendingBuyOrder()
@@ -326,7 +375,8 @@ void PlacePendingBuyOrder()
     double takeProfit = NormalizeDouble(entryPrice + risk * InpRiskRewardRatio, _Digits);
 
     // Ensure the entry price is above the stop loss
-    if (entryPrice <= stopLoss) {
+    if (entryPrice <= stopLoss)
+    {
         Print("ERROR: Buy entry price (", entryPrice, ") is below or equal to SL (", stopLoss, "). Cannot place order.");
         return;
     }
@@ -336,8 +386,9 @@ void PlacePendingBuyOrder()
     stopLoss   = NormalizeDouble(stopLoss, _Digits);
     takeProfit = NormalizeDouble(takeProfit, _Digits);
 
+    double lotSize = CalculateLotSize();
 
-    if(trade.BuyLimit(InpLotSize, entryPrice, _Symbol, stopLoss, takeProfit, ORDER_TIME_DAY, 0, "Bullish Breakout"))
+    if(trade.BuyLimit(lotSize, entryPrice, _Symbol, stopLoss, takeProfit, ORDER_TIME_DAY, 0, "Bullish Breakout"))
        {
         Print("EXECUTION: Placed BUY LIMIT at ", DoubleToString(entryPrice, _Digits), ", SL at ", DoubleToString(stopLoss, _Digits), ", TP at ", DoubleToString(takeProfit, _Digits));
        }
@@ -361,7 +412,8 @@ void PlacePendingSellOrder()
     double takeProfit = NormalizeDouble(entryPrice - risk * InpRiskRewardRatio, _Digits);
 
     // Ensure the entry price is below the stop loss
-    if (entryPrice >= stopLoss) {
+    if (entryPrice >= stopLoss)
+    {
         Print("ERROR: Sell entry price (", entryPrice, ") is above or equal to SL (", stopLoss, "). Cannot place order.");
         return;
     }
@@ -371,8 +423,9 @@ void PlacePendingSellOrder()
     stopLoss   = NormalizeDouble(stopLoss, _Digits);
     takeProfit = NormalizeDouble(takeProfit, _Digits);
 
+    double lotSize = CalculateLotSize();
 
-    if(trade.SellLimit(InpLotSize, entryPrice, _Symbol, stopLoss, takeProfit, ORDER_TIME_DAY, 0, "Bearish Breakout"))
+    if(trade.SellLimit(lotSize, entryPrice, _Symbol, stopLoss, takeProfit, ORDER_TIME_DAY, 0, "Bearish Breakout"))
        {
         Print("EXECUTION: Placed SELL LIMIT at ", DoubleToString(entryPrice, _Digits), ", SL at ", DoubleToString(stopLoss, _Digits), ", TP at ", DoubleToString(takeProfit, _Digits));
        }
