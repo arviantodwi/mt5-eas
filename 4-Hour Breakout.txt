@@ -1,0 +1,46 @@
+Loss        : IIIIIIIIIIIIIIIIII --> 18
+Loss ($)    : $180 ($10 risk)
+Win         : IIIIIIIIIIIII --> 13
+Win ($)     : $650 (1:5 RR ratio)
+Total trades: 31
+Win-rate    : 41.93%
+
+
+## Algo Prompt
+---
+
+### Indicators
+1. ATR 14, multiplier = 0.8
+
+---
+
+### Preparation
+- Start daily session with 4-hour timeframe
+- When market is open, wait until first 4-hour candle close
+- Store the high and low price of first closed 4-hour candle
+- Within the range of high and low, store the price range of 38.2% to 50% and 50% to 61.8%
+- Once preparation setup has done, move to 5-minute timeframe
+- Example: 4-hour high = 4053.47, 4-hour low = 4004.35, 38.2% to 50% range is 4034.67 to 4028.96, 50% to 61.8% range is 4028.96 to 4023.25
+- Note: Daily preparation must be recalculated every day.
+
+---
+
+### Strategy
+- Check if 5-minute candle is closed above the 4-hour high or below the 4-hour low from the previous setup. We call it breakout candle.
+- If breakout candle close above the 4-hour high, set bias to bullish. If breakout candle close below the 4-hour low, set bias to bearish.
+- After the breakout, monitor next candles after it with ATR14 applied.
+- If bias is bullish and when candle close while the ATR low is above the 4-hour high, then open a pending BUY order (see Execution section). If bias is bearish and when candle close while the ATR high is below the 4-hour low, then open a pending SELL order (see Execution section).
+
+---
+
+### Execution
+- If bias is bullish:
+	1. BUY pending order must be placed between 50% to 61.8%, which is the average price of that area.
+	2. SL set with 4-hour low price
+	3. TP set with 5 * risk
+- If bias is bearish:
+	1. SELL pending order must be placed between 38.2% to 50%, which is the average price of that area.
+	2. SL set with 4-hour high price
+	3. TP set with 5 * risk
+- If pending order doesn't fulfilled in the same day, it should automatically remove when the market trade session close (time = ORDER_TIME_DAY). Next day must start with 0 pending order
+- If pending order fulfilled and position still open when market trade session is close, keep it open for another 1 day. If the position still open until day+1 trade session is close, close the position.
