@@ -128,9 +128,10 @@ void OnTick()
         // --- Performance Optimization: Check for new M5 bar ---
         MqlRates rates_m5[];
         ArraySetAsSeries(rates_m5, true);
+        // Copy the last CLOSED M5 bar (index 1) to check its data
         if(CopyRates(_Symbol, PERIOD_M5, 1, 1, rates_m5) < 1) return;
 
-        // Only run logic if a new M5 bar has closed
+        // Only run logic if a new M5 bar has closed (compare with the time of the bar we just copied)
         if(rates_m5[0].time != g_lastCheckedM5Time)
            {
             // --- Step 1: Check for Breakout Logic (sets the bias) ---
@@ -153,7 +154,7 @@ void OnTick()
    }
 
 //+------------------------------------------------------------------+
-//| Performs the daily setup for the 4H candle                   |
+//| Performs the daily setup for the 4H candle                       |
 //+------------------------------------------------------------------+
 void PerformDailySetup(datetime dayStart)
    {
@@ -162,7 +163,7 @@ void PerformDailySetup(datetime dayStart)
 
     bool setupFound = false;
     // Search for the first closed 4H candle of the current day
-    for(int i = 1; i < 10; i++) // Check the last 10 closed 4H candles
+    for(int i = 1; i < 10; i++) // Check the last few closed 4H candles to catch the correct one
        {
         // Copy one candle at a time, starting from the most recent closed one (index 1)
         if(CopyRates(_Symbol, InpTimeframe, i, 1, rates_h4) > 0)
@@ -224,7 +225,7 @@ void PerformDailySetup(datetime dayStart)
 //+------------------------------------------------------------------+
 void CheckForBreakout(MqlRates &m5Bar)
    {
-    // Check for bullish breakout
+    // Check for bullish breakout (Close above 4H High)
     if(m5Bar.close > g_first4HHigh)
        {
         // Only update and print if the bias is not already bullish
@@ -237,7 +238,7 @@ void CheckForBreakout(MqlRates &m5Bar)
         return;
        }
 
-    // Check for bearish breakout
+    // Check for bearish breakout (Close below 4H Low)
     if(m5Bar.close < g_first4HLow)
        {
         // Only update and print if the bias is not already bearish
@@ -269,6 +270,8 @@ void CheckForAtrConfirmation(MqlRates &m5Bar)
     // Check for bullish ATR confirmation
     if(g_bias == "bullish")
        {
+        // We use the Low of the M5 candle, subtracting ATR, to confirm the force of the breakout.
+        // If Low - ATR * Multiplier is still above the 4H High, the breakout is strong.
         double atrLow = m5Bar.low - atrValue;
         Print("ATR Check (Bullish): ATR Low (", DoubleToString(atrLow, _Digits), ") vs 4H High (", DoubleToString(g_first4HHigh, _Digits), ")");
         if(atrLow > g_first4HHigh)
@@ -289,6 +292,8 @@ void CheckForAtrConfirmation(MqlRates &m5Bar)
     // Check for bearish ATR confirmation
     if(g_bias == "bearish")
        {
+        // We use the High of the M5 candle, adding ATR, to confirm the force of the breakout.
+        // If High + ATR * Multiplier is still below the 4H Low, the breakout is strong.
         double atrHigh = m5Bar.high + atrValue;
         Print("ATR Check (Bearish): ATR High (", DoubleToString(atrHigh, _Digits), ") vs 4H Low (", DoubleToString(g_first4HLow, _Digits), ")");
         if(atrHigh < g_first4HLow)
@@ -312,10 +317,25 @@ void CheckForAtrConfirmation(MqlRates &m5Bar)
 //+------------------------------------------------------------------+
 void PlacePendingBuyOrder()
    {
-    double entryPrice = g_avg50_61;
-    double stopLoss = g_first4HLow;
+    // Entry: Center of the 50%-61.8% Fibo retracement zone
+    double entryPrice = NormalizeDouble(g_avg50_61, _Digits);
+    // SL: Opposite 4H boundary
+    double stopLoss = NormalizeDouble(g_first4HLow, _Digits);
+    
     double risk = entryPrice - stopLoss;
-    double takeProfit = entryPrice + risk * InpRiskRewardRatio;
+    double takeProfit = NormalizeDouble(entryPrice + risk * InpRiskRewardRatio, _Digits);
+
+    // Ensure the entry price is above the stop loss
+    if (entryPrice <= stopLoss) {
+        Print("ERROR: Buy entry price (", entryPrice, ") is below or equal to SL (", stopLoss, "). Cannot place order.");
+        return;
+    }
+    
+    // Adjust order prices to nearest tick
+    entryPrice = NormalizeDouble(entryPrice, _Digits);
+    stopLoss   = NormalizeDouble(stopLoss, _Digits);
+    takeProfit = NormalizeDouble(takeProfit, _Digits);
+
 
     if(trade.BuyLimit(InpLotSize, entryPrice, _Symbol, stopLoss, takeProfit, ORDER_TIME_DAY, 0, "Bullish Breakout"))
        {
@@ -332,10 +352,25 @@ void PlacePendingBuyOrder()
 //+------------------------------------------------------------------+
 void PlacePendingSellOrder()
    {
-    double entryPrice = g_avg38_50;
-    double stopLoss = g_first4HHigh;
+    // Entry: Center of the 38.2%-50% Fibo retracement zone
+    double entryPrice = NormalizeDouble(g_avg38_50, _Digits);
+    // SL: Opposite 4H boundary
+    double stopLoss = NormalizeDouble(g_first4HHigh, _Digits);
+    
     double risk = stopLoss - entryPrice;
-    double takeProfit = entryPrice - risk * InpRiskRewardRatio;
+    double takeProfit = NormalizeDouble(entryPrice - risk * InpRiskRewardRatio, _Digits);
+
+    // Ensure the entry price is below the stop loss
+    if (entryPrice >= stopLoss) {
+        Print("ERROR: Sell entry price (", entryPrice, ") is above or equal to SL (", stopLoss, "). Cannot place order.");
+        return;
+    }
+    
+    // Adjust order prices to nearest tick
+    entryPrice = NormalizeDouble(entryPrice, _Digits);
+    stopLoss   = NormalizeDouble(stopLoss, _Digits);
+    takeProfit = NormalizeDouble(takeProfit, _Digits);
+
 
     if(trade.SellLimit(InpLotSize, entryPrice, _Symbol, stopLoss, takeProfit, ORDER_TIME_DAY, 0, "Bearish Breakout"))
        {
